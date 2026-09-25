@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Owau — Add Meditation Track</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 480px; margin: 40px auto; padding: 0 20px; background: #0d0d17; color: #eee; }
+  h1 { font-size: 20px; }
+  label { display: block; margin-top: 16px; font-size: 13px; color: #aaa; }
+  input, select { width: 100%; padding: 10px; margin-top: 4px; border-radius: 8px; border: 1px solid #444; background: #1a1a2a; color: #eee; box-sizing: border-box; font-size: 15px; }
+  input[type="file"] { padding: 8px; }
+  button { margin-top: 12px; padding: 12px 20px; border-radius: 8px; border: none; background: #d4af6a; color: #1a1a2a; font-weight: 600; font-size: 15px; width: 100%; cursor: pointer; }
+  button.secondary { background: #333; color: #eee; }
+  button:disabled { opacity: 0.5; }
+  #status, #fetchStatus { margin-top: 12px; padding: 10px; border-radius: 8px; font-size: 14px; display: none; }
+  .success { background: #1a3a1a; color: #8f8; display: block !important; }
+  .error { background: #3a1a1a; color: #f88; display: block !important; }
+  .info { background: #1a2a3a; color: #8cf; display: block !important; }
+  progress { width: 100%; margin-top: 12px; }
+  .divider { text-align: center; color: #666; font-size: 12px; margin: 20px 0; }
+  #fileSourceLabel { font-size: 12px; color: #8f8; margin-top: 6px; display: none; }
+</style>
+</head>
+<body>
+  <h1>Add Meditation Track</h1>
+
+  <label>Paste a direct audio file URL (tries to fetch it automatically)</label>
+  <input id="audioUrl" placeholder="https://.../ocean-waves.mp3">
+  <button class="secondary" onclick="tryFetchFromUrl()">Fetch from URL</button>
+  <div id="fetchStatus"></div>
+
+  <div class="divider">— or —</div>
+
+  <label>Choose File Manually</label>
+  <input id="audioFile" type="file" accept="audio/*" onchange="onFileChosen()">
+  <div id="fileSourceLabel"></div>
+
+  <label>Title</label>
+  <input id="title" placeholder="e.g. Ocean Waves">
+
+  <label>Subtitle (optional)</label>
+  <input id="subtitle" placeholder="e.g. 30 min ambient loop">
+
+  <label>Genre</label>
+  <select id="genre">
+    <option value="Nature Sounds">Nature Sounds</option>
+    <option value="Ambient">Ambient</option>
+    <option value="Sleep">Sleep</option>
+    <option value="Guided">Guided</option>
+    <option value="Instrumental">Instrumental</option>
+  </select>
+
+  <label>SF Symbol Icon Name</label>
+  <input id="icon" placeholder="e.g. water.waves, moon.stars, leaf.fill" value="moon.stars">
+
+  <progress id="progressBar" value="0" max="100" style="display:none;"></progress>
+
+  <button id="uploadBtn" onclick="uploadTrack()">Upload & Save</button>
+
+  <div id="status"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+  const SUPABASE_URL = "https://efidvkbdbdddfldkjois.supabase.co";
+  const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVmaWR2a2JkYmRkZGZsZGtqb2lzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ2NzU3OTYsImV4cCI6MjEwMDI1MTc5Nn0.q8x2-rN8Cl31dFIwOhs4P0kX1GTvj_Zen7t8w5x8sTs";
+  const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  const BUCKET = "meditation-tracks";
+
+  // Whichever of these is set most recently is what actually gets
+  // uploaded — either a successfully auto-fetched blob, or a manually
+  // chosen local file.
+  let fetchedBlob = null;
+  let fetchedFileName = null;
+
+  function guessTitleFromFilename(filename) {
+    const nameOnly = filename.replace(/\.[^.]+$/, '');
+    return nameOnly
+      .replace(/[-_]+/g, ' ')
+      .replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  async function tryFetchFromUrl() {
+    const url = document.getElementById('audioUrl').value.trim();
+    const fetchStatus = document.getElementById('fetchStatus');
+    fetchStatus.className = ''; fetchStatus.style.display = 'none';
+
+    if (!url) {
+      fetchStatus.className = 'error';
+      fetchStatus.textContent = 'Paste a URL first.';
+      return;
+    }
+
+    fetchStatus.className = 'info';
+    fetchStatus.textContent = 'Trying to fetch the file...';
+
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('Server returned ' + res.status);
+      const blob = await res.blob();
+
+      // A successful fetch but a non-audio content-type usually means we
+      // actually got an HTML error/landing page back, not the real file —
+      // treat that as a failure too, since it isn't usable audio.
+      if (blob.type && !blob.type.startsWith('audio/') && blob.size < 100000) {
+        throw new Error('This didn\'t return an actual audio file (got ' + (blob.type || 'unknown type') + ')');
+      }
+
+      fetchedBlob = blob;
+      fetchedFileName = url.split('/').pop().split('?')[0] || 'track.mp3';
+
+      document.getElementById('audioFile').value = '';
+      document.getElementById('fileSourceLabel').style.display = 'block';
+      document.getElementById('fileSourceLabel').textContent = '✓ Using fetched file: ' + fetchedFileName;
+
+      if (!document.getElementById('title').value) {
+        document.getElementById('title').value = guessTitleFromFilename(fetchedFileName);
+      }
+
+      fetchStatus.className = 'success';
+      fetchStatus.textContent = 'Fetched successfully! Review the fields below and upload.';
+    } catch (e) {
+      fetchedBlob = null;
+      fetchedFileName = null;
+      fetchStatus.className = 'error';
+      fetchStatus.textContent = 'Couldn\'t fetch this automatically (' + e.message + '). This is usually because the source site blocks direct fetching from other websites — download the file yourself instead and use "Choose File Manually" below.';
+    }
+  }
+
+  function onFileChosen() {
+    // Manually choosing a file always takes priority over anything
+    // previously auto-fetched.
+    fetchedBlob = null;
+    fetchedFileName = null;
+    const fileInput = document.getElementById('audioFile');
+    const label = document.getElementById('fileSourceLabel');
+    if (fileInput.files[0]) {
+      label.style.display = 'block';
+      label.textContent = '✓ Using chosen file: ' + fileInput.files[0].name;
+      if (!document.getElementById('title').value) {
+        document.getElementById('title').value = guessTitleFromFilename(fileInput.files[0].name);
+      }
+    } else {
+      label.style.display = 'none';
+    }
+  }
+
+  async function uploadTrack() {
+    const title = document.getElementById('title').value.trim();
+    const subtitle = document.getElementById('subtitle').value.trim() || null;
+    const genre = document.getElementById('genre').value;
+    const icon = document.getElementById('icon').value.trim() || 'moon.stars';
+    const status = document.getElementById('status');
+    const uploadBtn = document.getElementById('uploadBtn');
+    const progressBar = document.getElementById('progressBar');
+    status.className = ''; status.style.display = 'none';
+
+    const fileInput = document.getElementById('audioFile');
+    const localFile = fileInput.files[0];
+
+    // Prefer a manually chosen local file if one is present; otherwise
+    // fall back to a successfully auto-fetched blob.
+    const source = localFile || fetchedBlob;
+    const sourceName = localFile ? localFile.name : fetchedFileName;
+
+    if (!source || !title) {
+      showError('An audio file (fetched or chosen) and a title are required.');
+      return;
+    }
+
+    uploadBtn.disabled = true;
+    progressBar.style.display = 'block';
+    progressBar.value = 10;
+
+    try {
+      const contentType = localFile ? localFile.type : (fetchedBlob.type || 'audio/mpeg');
+      const safeName = sourceName.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const storagePath = `${Date.now()}_${safeName}`;
+
+      progressBar.value = 30;
+      const { error: uploadError } = await supabaseClient
+        .storage
+        .from(BUCKET)
+        .upload(storagePath, source, { contentType: contentType, upsert: false });
+
+      if (uploadError) {
+        showError('Upload failed: ' + uploadError.message);
+        uploadBtn.disabled = false;
+        progressBar.style.display = 'none';
+        return;
+      }
+
+      progressBar.value = 80;
+
+      const row = {
+        title: title,
+        subtitle: subtitle,
+        storage_path: storagePath,
+        icon: icon,
+        genre: genre,
+        sort_order: Math.floor(Date.now() / 1000)
+      };
+
+      const { error: insertError } = await supabaseClient.from('meditation_tracks').insert(row);
+      progressBar.value = 100;
+
+      if (insertError) {
+        showError('File uploaded, but saving the track record failed: ' + insertError.message);
+      } else {
+        showSuccess('Uploaded and saved! It will show up in the app right away.');
+        fileInput.value = '';
+        document.getElementById('audioUrl').value = '';
+        document.getElementById('title').value = '';
+        document.getElementById('subtitle').value = '';
+        document.getElementById('fileSourceLabel').style.display = 'none';
+        document.getElementById('fetchStatus').style.display = 'none';
+        fetchedBlob = null;
+        fetchedFileName = null;
+      }
+    } catch (e) {
+      showError('Something went wrong: ' + e.message);
+    } finally {
+      uploadBtn.disabled = false;
+      setTimeout(() => { progressBar.style.display = 'none'; progressBar.value = 0; }, 1500);
+    }
+  }
+
+  function showError(msg) {
+    const s = document.getElementById('status');
+    s.className = 'error'; s.textContent = msg;
+  }
+  function showSuccess(msg) {
+    const s = document.getElementById('status');
+    s.className = 'success'; s.textContent = msg;
+  }
+</script>
+</body>
+</html>
